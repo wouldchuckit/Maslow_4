@@ -1,3 +1,5 @@
+CLICK OVER HERE >>> IN THE CORNER FOR TABLE OF CONTENTS OUTLINE>>>>>^
+
 # Router And Spindle Library
 
 Maslow 4 was built aroud the DewaltDWP611 series router. For countries with 240 volts it is the DewaltD26200.  Maslow uses it for the spinning blade but also as the structural spine of the machine.  This is nice in keeping things simple and reducing parts. Dewalt is a well established company that sells around the world and makes versions of the router for different voltage requirements. This is difficult because it locks us into using the Dewalt611. 

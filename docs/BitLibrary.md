@@ -1,3 +1,5 @@
+CLICK OVER HERE >>> IN THE CORNER FOR TABLE OF CONTENTS>>>>>^
+
 # Bit Library
 
 This is a place to list bits that the community has found useful, for each bit add materials and uses that it was effective for as well as speeds and recommending settings. 

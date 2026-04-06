@@ -6,15 +6,20 @@ also this
 
 
 
-## LED Indicators
+
+
+---
+
+## Common Problems
+### LED Indicators
 
 The Maslow 4 control board has two indicator LEDs: a **Red LED** and a **WiFi LED**. Their blink patterns tell you what the machine is doing.
 
-### Red LED
+#### Red LED
 
 The Red LED signals error conditions that require attention. There are two distinct blink patterns:
 
-#### Slow Blink (300 ms on / 300 ms off) — Error / Emergency Stop
+##### Slow Blink (300 ms on / 300 ms off) — Error / Emergency Stop
 
 The Red LED blinks slowly when `Maslow.error` is set to `true`. This state persists until the machine is power-cycled. The machine will not respond to movement commands while in this state.
 
@@ -29,7 +34,7 @@ Possible causes:
 
 **Recovery:** Power the machine off and back on. Investigate the error message that was printed in the console/log when the LED started blinking—it will name the specific axis and cause.
 
-#### Rapid Double-Blink (100 ms on / 100 ms off / 100 ms on / 800 ms pause) — Watchdog Fired
+##### Rapid Double-Blink (100 ms on / 100 ms off / 100 ms on / 800 ms pause) — Watchdog Fired
 
 Both the **Red LED and the WiFi LED** blink together in a rapid double-blink pattern. This means the firmware's internal motion-control watchdog fired: the main `update()` loop was not called for more than 100 ms, which indicates the processor was blocked on another task (e.g. a large file write or a network operation) long enough that motor safety could not be guaranteed.
 
@@ -37,13 +42,10 @@ All motors are stopped immediately when this occurs.
 
 **Recovery:** Power the machine off and back on. If this happens repeatedly, check for heavy WiFi traffic, large file uploads, or other operations that may be blocking the motion-control task.
 
-### WiFi LED
+#### WiFi LED
 
 The WiFi LED blinks to indicate the machine's IP address on the local network after it connects (short blinks encode the address). It also blinks together with the Red LED during the watchdog-fired pattern described above.
 
----
-
-## Common Problems
 
 ### Spools have too much friction 
 The ring of the spool that the belt winds around inside the arm sometimes comes from the factory with a little bit too much plastic on the edges or a tight fit on the main body of the arm. There is a slight taper so that the parts can be released from the mold.  Make sure the spool isn't geting stuck on that taper, lightly sand the inside of the spool and the corresponding ring on the arm and then use a silicone lubricant.  Be careful with other lubricants as they can interact with the plastic. 

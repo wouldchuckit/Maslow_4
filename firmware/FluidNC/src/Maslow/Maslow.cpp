@@ -211,7 +211,11 @@ void Maslow_::update() {
     if (!Maslow.using_default_config) {
         unsigned long now = millis();
         //if the update function is not being called enough, stop everything to prevent damage
-        if (now - lastCallToUpdate > UPDATE_WATCHDOG_MS) {
+        // Skip the watchdog check during file/firmware uploads: flash write operations stall
+        // both CPU cores, so update() may not run for > UPDATE_WATCHDOG_MS through no fault
+        // of the motion system.  lastCallToUpdate is still refreshed so the watchdog does not
+        // trigger immediately after the upload finishes.
+        if (!uploadInProgress && now - lastCallToUpdate > UPDATE_WATCHDOG_MS) {
             unsigned int elapsedTime = now - lastCallToUpdate;
             log_error("Emergency stop. Update function not being called enough. " << elapsedTime << "ms since last call");
             watchdogFired = true;
@@ -299,9 +303,6 @@ void Maslow_::update() {
         } else {
             digitalWrite(coolingFanPin, LOW);  //Turn the cooling fan off
         }
-
-        //Check to see if we need to resend the calibration data
-        calibration.checkCalibrationData();
 
         //------------------------ End of Maslow State Machine
 
@@ -864,10 +865,10 @@ void Maslow_::loadBeltPositions() {
     // When belts are retracted (RETRACTED), mark all belts as not extended
     if (newState == EXTENDEDOUT) {
         calibration.setExtendedState(true, true, true, true);
-        log_debug("Set Calibration extended* variables to true (belts are extended)");
+        log_debug("Set Find Anchors extended* variables to true (belts are extended)");
     } else {
         calibration.setExtendedState(false, false, false, false);
-        log_debug("Set Calibration extended* variables to false (belts are retracted)");
+        log_debug("Set Find Anchors extended* variables to false (belts are retracted)");
     }
 
     // Disable alarm if present

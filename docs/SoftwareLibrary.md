@@ -70,6 +70,37 @@ PICTURE
 
 - Credits: Barbour Smith
 
+### FreazyCAM
+<img width="3024" height="1678" alt="image" src="https://github.com/user-attachments/assets/ec33addd-6407-46a8-80c2-92b6165bd740" />
+
+- Overview:FreazyKam is an excellent free online CAM option which can import .svg files or .dxf files and show how they will cut. It was developed in the maslow forums by the community so it is well supported if you encounter any issues
+
+FreazyCAM is a local-first CAM app focused on the essentials:
+
+    Profile cuts
+    Pockets
+    Drilling
+    Automatic tabs
+    SVG import and drawing tools
+    2D/3D simulation
+    G-code export with custom machine profiles
+
+The idea is simple: fast, practical CAM that can run fully offline and stays easy to use.
+- Links:
+https://iarchi.github.io/FreazyKam/
+Repository:
+https://github.com/IArchi/FreazyKam
+- Online
+- Cost: Free
+- Experiences:
+- Details:
+- Limitations:New and under development by a Maslow community member in the maslow forums. 
+- Notes:
+- Forum discussion link:https://forums.maslowcnc.com/t/made-my-own-easy-cam-tool/25774
+- More Pictures:<img width="690" height="380" alt="image" src="https://github.com/user-attachments/assets/89038182-9e72-4e69-87d5-2c6f2ef3346e" />
+
+- Credits:IArchi
+  
 ### FreeCAD
 <img width="600" alt="image" src="https://github.com/user-attachments/assets/f552bbcb-6854-424b-b88e-dd916452c828" />
 

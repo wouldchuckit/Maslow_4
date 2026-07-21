@@ -307,7 +307,10 @@ PICTURE
   - Originally prototyped this with racheting tie down straps looped around through each beam and it worked well.  The nyolon in the straps is kind of bouncy so I switched for chains.  With the faster calibration times the straps might work ok.  I was impressed by how stiff the frame is with the chains.
   - Next iteration I am goign to move the chains further out on the beams to increase stiffness.
   - Would be easy to scale up with 12 foot beams but you would have to use belt extensions on that I think.
-  - I would also redesign the center to make my own hinge out of a stack of mending plates stepped down on each beam instead of the eyebolts. Seems easier and cheaper. <img width="427" height="503" alt="image" src="https://github.com/user-attachments/assets/5c24a79d-35de-415c-b43a-b7e4f8ae4407" />
+  - I would also redesign the center to make my own hinge out of a stack of mending plates stepped down on each beam instead of the eyebolts. Seems easier and cheaper. <img width="427" height="503" alt="image" src="https://github.com/user-attachments/assets/5c24a79d-35de-415c-b43a-b7e4f8ae4407" /> Here is my untested plan for using mending plates for hinges. <img width="375" height="499" alt="image" src="https://github.com/user-attachments/assets/0e59126a-a459-4fee-9e0f-14a647ccb98d" />
+
+
+
 
 - More Pictures:
   - Variation using hinges.  I don't recommend this because it was dangerous with pinch points and had to be moved all as one unit.  People have suggested other types of hinges, I would try it with Strap hinge halves so you could just slide a pin in and out of all of them but they did not fit on the 2x8 and were much more expensive. 

@@ -113,6 +113,7 @@ void Maslow_::begin(void (*sys_rt)()) {
         log_error(M + " failed to initialize - fix errors and restart");
     } else {
         log_info("Starting " + M + " Version " << VERSION_NUMBER);
+        log_info("Maslow_Retract_Current_Threshold: " << calibration.retractCurrentThreshold);
     }
 }
 
@@ -405,6 +406,12 @@ void Maslow_::setTargets(float xTarget, float yTarget, float zTarget, bool tl, b
     }
 }
 
+void Maslow_::setEncoderGeometry(float beltToothSpacing, float encoderTeeth) {
+    for (int arm = _TL; arm < ARM_COUNT; arm++) {
+        axis[arm].setEncoderGeometry(beltToothSpacing, encoderTeeth);
+    }
+}
+
 // Get's the most recently set target position in X
 double Maslow_::getTargetX() {
     return targetX;
@@ -480,7 +487,18 @@ void Maslow_::saveZPos() {
 }
 
 //This function loads the z-axis position from the non-volitle storage
+float Maslow_::currentZHome() const {
+    float zHome = gc_state.coord_system[Z_AXIS] + gc_state.coord_offset[Z_AXIS];
+    if (Z_AXIS == TOOL_LENGTH_OFFSET_AXIS) {
+        zHome += gc_state.tool_length_offset;
+    }
+    return zHome;
+}
+
 void Maslow_::loadZPos() {
+    static constexpr float MIN_VALID_Z_MM = 0.0f;
+    static constexpr float MAX_VALID_Z_MM = 72.0f;
+
     nvs_handle_t nvsHandle;
     esp_err_t    ret = nvs_open("maslow", NVS_READWRITE, &nvsHandle);
     if (ret != ESP_OK) {
@@ -502,6 +520,25 @@ void Maslow_::loadZPos() {
         fi.i    = value2;
         targetZ = fi.f;
 
+        // gc_state is zero-initialized before gc_init() runs, so if coordinate
+        // offsets are not loaded yet, Z home safely defaults to 0 here.
+        float zHome = currentZHome();
+
+        float zPosition = targetZ - zHome;
+        bool zPositionOutOfRange = !std::isfinite(targetZ) || targetZ < MIN_VALID_Z_MM || targetZ > MAX_VALID_Z_MM;
+        bool zHomeOutOfRange = !std::isfinite(zHome) || zHome < MIN_VALID_Z_MM || zHome > MAX_VALID_Z_MM;
+
+        if (zPositionOutOfRange) {
+            log_warn("Maslow Z position warning: Z position out of range, check Z home is valid (Z home=" << zHome << "mm, Z position=" << zPosition
+                                                                                                           << "mm, Z home + Z position=" << targetZ
+                                                                                                           << "mm). Valid range is 0 to 72mm inclusive. Power cycling Maslow may clear error.");
+        }
+
+        if (zHomeOutOfRange) {
+            log_warn("Maslow Z home reset warning: Startup Z home is out of range (Zm=" << targetZ << "mm, Z home=" << zHome
+                                                                                          << "mm). Valid range for Z home is 0 to 72mm inclusive. Resetting Z home to Zm.");
+        }
+
         // Use Z_AXIS constant (2) for cartesian coordinate, not motor index (4)
         float* mpos  = get_mpos();
         mpos[Z_AXIS] = targetZ;
@@ -511,7 +548,29 @@ void Maslow_::loadZPos() {
 
         gc_sync_position();  //This updates the Gcode engine with the new position from the stepping engine that we set with set_motor_steps
         plan_sync_position();
+
+        if (zHomeOutOfRange) {
+            // Reset Z home to Zm by clearing any transient G92 offset and then setting the
+            // work coordinate system so that work Z = 0 at the current machine position (Zm).
+            char  clear_offset_line[] = "G92.1";
+            Error result              = gc_execute_line(clear_offset_line);
+            if (result != Error::Ok) {
+                log_error("Failed to clear transient Z home offset: " << errorString(result));
+            } else {
+                char set_home_line[] = "G10 L20 P0 Z0";
+                result               = gc_execute_line(set_home_line);
+                if (result != Error::Ok) {
+                    log_error("Failed to set work coordinate Z home to Zm: " << errorString(result));
+                }
+            }
+        }
     }
+}
+
+void Maslow_::logLoadZPosDebug() {
+    float zHome = currentZHome();
+    float zPosition = targetZ - zHome;
+    log_info("Zm=" << targetZ << "mm, Z home=" << zHome << "mm, Z position=" << zPosition << "mm");
 }
 
 /** Sets the 'bottom' Z position, this is a 'stop' beyond which travel cannot continue */
@@ -526,11 +585,19 @@ void Maslow_::setZStop() {
     gc_sync_position();  //This updates the Gcode engine with the new position from the stepping engine that we set with set_motor_steps
     plan_sync_position();
 
-    // Also set Z home (G92 Z0) to establish work coordinate offset
-    char  gcode_line[] = "G92 Z0";
-    Error result       = gc_execute_line(gcode_line);
+    // Persist Z home at 0 by clearing transient G92 offset and updating the
+    // active work coordinate system at the current machine position.
+    char  clear_offset_line[] = "G92.1";
+    Error result              = gc_execute_line(clear_offset_line);
     if (result != Error::Ok) {
-        log_error("Failed to set Z home: " << errorString(result));
+        log_error("Failed to clear transient Z home offset: " << errorString(result));
+        return;
+    }
+
+    char set_home_line[] = "G10 L20 P0 Z0";
+    result               = gc_execute_line(set_home_line);
+    if (result != Error::Ok) {
+        log_error("Failed to set persistent Z home: " << errorString(result));
     }
 }
 
@@ -699,9 +766,7 @@ void Maslow_::loadBeltPositions() {
 
             // If angle difference is within 1/4 turn (1024 counts), adjust belt position for small movement
             if (abs(angleDiff) < 1024) {
-                // Convert angle difference to belt length change
-                // Using mmPerRevolution = 43.975
-                float movementMM = (angleDiff / 4096.0) * 43.975 * -1;
+                float movementMM = (angleDiff / 4096.0f) * axis[_TL].getMmPerRevolution() * -1.0f;
                 tlPos += movementMM;
             } else {
                 log_info("TL encoder angle difference too large (" << angleDiff << " counts), treating belt positions as stale");
@@ -742,7 +807,7 @@ void Maslow_::loadBeltPositions() {
                 angleDiff += 4096;
 
             if (abs(angleDiff) < 1024) {
-                float movementMM = (angleDiff / 4096.0) * 43.975 * -1;
+                float movementMM = (angleDiff / 4096.0f) * axis[_TR].getMmPerRevolution() * -1.0f;
                 trPos += movementMM;
             } else {
                 log_info("TR encoder angle difference too large (" << angleDiff << " counts), treating belt positions as stale");
@@ -782,7 +847,7 @@ void Maslow_::loadBeltPositions() {
                 angleDiff += 4096;
 
             if (abs(angleDiff) < 1024) {
-                float movementMM = (angleDiff / 4096.0) * 43.975 * -1;
+                float movementMM = (angleDiff / 4096.0f) * axis[_BL].getMmPerRevolution() * -1.0f;
                 blPos += movementMM;
             } else {
                 log_info("BL encoder angle difference too large (" << angleDiff << " counts), treating belt positions as stale");
@@ -822,7 +887,7 @@ void Maslow_::loadBeltPositions() {
                 angleDiff += 4096;
 
             if (abs(angleDiff) < 1024) {
-                float movementMM = (angleDiff / 4096.0) * 43.975 * -1;
+                float movementMM = (angleDiff / 4096.0f) * axis[_BR].getMmPerRevolution() * -1.0f;
                 brPos += movementMM;
             } else {
                 log_info("BR encoder angle difference too large (" << angleDiff << " counts), treating belt positions as stale");

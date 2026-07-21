@@ -1141,8 +1141,53 @@ const tabletMoveBottomLeft = () => sendMove("X-Y-");
 const tabletMoveBottom = () => sendMove("Y-");
 const tabletMoveBottomRight = () => sendMove("X+Y-");
 // Button event handlers - Fourth Row
-const tabletSetZHomeMDown = () => zeroAxis("Z");
-const tabletSetZHomeMUp = () => refreshGcode();
+const openSetZHomePopup = () => {
+  tabletClick();
+  const zCurrent = MPOS && MPOS.length >= 3 ? MPOS[2].toFixed(3) : "0";
+  const zInput = id("setHomeZ");
+  if (zInput) {
+    // Pre-fill with current machine Z position so the user sees where Z is now.
+    zInput.value = zCurrent;
+    zInput.min = Z_HOME_MIN_SAFE_MM;
+    zInput.max = Z_HOME_MAX_SAFE_MM;
+    zInput.title = `Z: ${Z_HOME_MIN_SAFE_MM} to ${Z_HOME_MAX_SAFE_MM} mm`;
+  }
+  // Context label shows the previously defined Z home value (WCO[2]).
+  const zHomeLabel = id("currentZHomeLabel");
+  if (zHomeLabel) {
+    const zHome = WCO && WCO.length >= 3 ? WCO[2].toFixed(3) : "0";
+    zHomeLabel.textContent = `Z Home: ${zHome} mm`;
+  }
+  openModal("set-z-home-popup");
+}
+
+const moveToZHome = () => {
+  hideModal("set-z-home-popup");
+  const machineZ = MPOS && MPOS.length >= 3 ? MPOS[2] : null;
+  const workZeroZ = WCO && WCO.length >= 3 ? WCO[2] : null;
+  const zDelta = (machineZ !== null && workZeroZ !== null) ? workZeroZ - machineZ : 0;
+  checkZHomeAndProceed(() => {
+    sendCommand("G90 G0 Z0");
+    addMessage("Moving to Z Home position");
+  }, zDelta);
+}
+
+const confirmSetZHome = () => {
+  const zInput = id("setHomeZ");
+  const rawZ = zInput ? parseFloat(zInput.value) : NaN;
+  const zVal = isNaN(rawZ) ? 0 : Math.max(Z_HOME_MIN_SAFE_MM, Math.min(Z_HOME_MAX_SAFE_MM, rawZ));
+
+  if (!isNaN(rawZ) && zVal !== rawZ) {
+    addMessage(`Z Home value clamped to range: Z=${zVal}`);
+  }
+
+  hideModal("set-z-home-popup");
+
+  const mposZ = MPOS ? MPOS[2] : 0;
+  sendCommand(`G10 L20 P0 Z${mposZ - zVal}`);
+  addMessage(`Z Home pos set: Z=${zVal}mm`);
+  refreshGcode();
+}
 // Button event handlers - Fifth Row - nothing special here, move on
 
 // Send a command directly via WebSocket to bypass PAGEID routing.
@@ -1480,6 +1525,7 @@ const tabletSavePark = () => {
 };
 
 const scaleThicknessDefaults = { scaleX: 1.0, scaleY: 1.0, workThickness: 0.0, spoilboardThickness: 0.0 };
+const applyTensionBeltLimitDefaults = { retractionLimit: 300.0, extendDist: 2600.0 };
 
 const getScaleThicknessValues = () => {
   const lv = globalThis.loadedValues || {};
@@ -1541,6 +1587,62 @@ const tabletSaveScaleThickness = () => {
   saveMaslowYaml();
   scheduleCallback(() => {
     hideModal("scale-thickness-popup");
+    hideModal("optional-settings-popup");
+  }, 1000);
+};
+
+const tabletApplyTensionLimitPopupHide = () => hideModal("apply-tension-limit-popup");
+
+const getApplyTensionLimitValues = () => {
+  const lv = globalThis.loadedValues || {};
+  return {
+    retractionLimit: isNaN(parseFloat(lv.applyTensionBeltRetractionLimit))
+      ? applyTensionBeltLimitDefaults.retractionLimit
+      : parseFloat(lv.applyTensionBeltRetractionLimit),
+    extendDist: isNaN(parseFloat(lv.extendDist))
+      ? applyTensionBeltLimitDefaults.extendDist
+      : parseFloat(lv.extendDist),
+  };
+};
+
+const tabletOpenApplyTensionLimitPopup = () => {
+  const { retractionLimit, extendDist } = getApplyTensionLimitValues();
+
+  const elRetractionLimit = id("applyTensionBeltRetractionLimit");
+  const elExtendDist = id("applyTensionExtendDist");
+  const elCurrent = id("apply-tension-limit-current-values");
+
+  if (elRetractionLimit) elRetractionLimit.value = retractionLimit;
+  if (elExtendDist) elExtendDist.value = extendDist;
+  if (elCurrent) elCurrent.textContent = `Current: Belt Retraction Limit=${retractionLimit}mm, Extend Dist=${extendDist}mm`;
+
+  openModal("apply-tension-limit-popup");
+};
+
+const tabletSaveApplyTensionLimit = () => {
+  const elRetractionLimit = id("applyTensionBeltRetractionLimit");
+  const elExtendDist = id("applyTensionExtendDist");
+
+  const newRetractionLimit = elRetractionLimit ? elRetractionLimit.value.trim() : "";
+  const newExtendDist = elExtendDist ? elExtendDist.value.trim() : "";
+
+  const lv = globalThis.loadedValues || {};
+  const keys = [
+    { field: "applyTensionBeltRetractionLimit", cmd: "Maslow_Apply_Tension_Belt_Retraction_Limit", newVal: newRetractionLimit },
+    { field: "extendDist", cmd: "Maslow_Extend_Dist", newVal: newExtendDist },
+  ];
+
+  for (const k of keys) {
+    if (k.newVal !== "" && k.newVal !== String(lv[k.field] || "")) {
+      SendPrinterCommand(`$/${k.cmd}=${k.newVal}`);
+      if (!globalThis.loadedValues) globalThis.loadedValues = {};
+      globalThis.loadedValues[k.field] = k.newVal;
+    }
+  }
+
+  saveMaslowYaml();
+  scheduleCallback(() => {
+    hideModal("apply-tension-limit-popup");
     hideModal("optional-settings-popup");
   }, 1000);
 };
@@ -1623,8 +1725,7 @@ function tabletInit() {
     id("tablettab_bottomRight").addEventListener("click", tabletMoveBottomRight);
 
     // Buttons - Fourth Row
-    id("tablettab_set_z_home").addEventListener("mousedown", tabletSetZHomeMDown);
-    id("tablettab_set_z_home").addEventListener("mouseup", tabletSetZHomeMUp);
+    id("tablettab_set_z_home").addEventListener("click", openSetZHomePopup);
     id("tablettab_move_to_xy_home").addEventListener("click", moveHome);
     id("tablettab_toggle_units").addEventListener("click", toggleUnits);
     id("tablettab_set_xy_home").addEventListener("click", openSetHomePopup);
@@ -1634,6 +1735,13 @@ function tabletInit() {
     id("set_home_popup_content").addEventListener("click", tabletPopupStopProp);
     id("tablettab_set_home_cancel").addEventListener("click", () => hideModal("set-home-popup"));
     id("tablettab_set_home_confirm").addEventListener("click", confirmSetHome);
+
+    // Buttons - Set Z Home Pop-up
+    id("set-z-home-popup").addEventListener("click", () => hideModal("set-z-home-popup"));
+    id("set_z_home_popup_content").addEventListener("click", tabletPopupStopProp);
+    id("tablettab_set_z_home_cancel").addEventListener("click", () => hideModal("set-z-home-popup"));
+    id("tablettab_move_to_z_home").addEventListener("click", moveToZHome);
+    id("tablettab_set_z_home_confirm").addEventListener("click", confirmSetZHome);
 
     // Controls - Fifth Row
     id("filelist").addEventListener("change", selectFile);
@@ -1674,6 +1782,7 @@ function tabletInit() {
     id("tablettab_cal_work_area").addEventListener("click", tabletOpenWorkAreaPopup);
     id("tablettab_cal_park").addEventListener("click", tabletOpenParkPopup);
     id("tablettab_cal_scale_thickness").addEventListener("click", tabletOpenScaleThicknessPopup);
+    id("tablettab_cal_apply_tension_limit").addEventListener("click", tabletOpenApplyTensionLimitPopup);
 
     // Buttons - Work Area Pop-up
     id("work-area-popup").addEventListener("click", tabletWorkAreaPopupHide);
@@ -1693,6 +1802,12 @@ function tabletInit() {
     id("tablettab_scale_thickness_cancel").addEventListener("click", tabletScaleThicknessPopupHide);
     id("tablettab_scale_thickness_save").addEventListener("click", tabletSaveScaleThickness);
 
+    // Buttons - Apply Tension Belt Limit Pop-up
+    id("apply-tension-limit-popup").addEventListener("click", tabletApplyTensionLimitPopupHide);
+    id("apply_tension_limit_popup_content").addEventListener("click", tabletPopupStopProp);
+    id("tablettab_apply_tension_limit_cancel").addEventListener("click", tabletApplyTensionLimitPopupHide);
+    id("tablettab_apply_tension_limit_save").addEventListener("click", tabletSaveApplyTensionLimit);
+
     // Buttons - Configuration Pop-up
     id("configuration-popup").addEventListener("click", tabletConfigPopupHide);
     id("configuration_popup_content").addEventListener("click", tabletPopupStopProp);
@@ -1702,6 +1817,11 @@ function tabletInit() {
 }
 
 const showGCode = (gcode, append = false, updateToolpath = true) => {
+  const isLoadStatusText = gcode === "Loading GCode file..." || gcode.startsWith("Error loading GCode file:");
+  if (!append && gcode !== "" && !isLoadStatusText && typeof clearFindAnchorsTrace === "function") {
+    clearFindAnchorsTrace();
+  }
+
   gCodeLoaded = gcode !== "";
   if (!gCodeLoaded) {
     _gcodeRaw = "";

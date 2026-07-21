@@ -34,6 +34,8 @@ kinematics:
     brZ: 78.0
     beltEndExtension: 30.0
     armLength: 123.4
+    beltToothSpacing: 1.9988  # mm between adjacent belt teeth
+    encoderTeeth: 22.0        # tooth count on the encoder roller
     spoilboardThickness: 0.0
     workThickness: 0.0
     maxSegmentLength: 5.0
@@ -261,15 +263,6 @@ namespace Kinematics {
             // This can happen if belt lengths are inconsistent or zero
             cartesian[X_AXIS] = 0.0f;
             cartesian[Y_AXIS] = 0.0f;
-            // Don't spam the console when belts are at zero length or during transitional states
-            // where belt lengths are not yet in a valid configuration for kinematics computation
-            int calibState = Maslow.calibration.currentState;
-            if (!(tlBeltLength == 0.0f || trBeltLength == 0.0f) &&
-                calibState != EXTENDING && calibState != RETRACTING &&
-                calibState != TAKING_SLACK && calibState != RELEASE_TENSION &&
-                calibState != UNKNOWN) {
-                log_error("MaslowKinematics: Failed to compute X,Y from belt lengths, using (0,0)");
-            }
         }
 
         // Copy any additional axes directly (none expected beyond Z for now)
@@ -417,6 +410,8 @@ namespace Kinematics {
         handler.item("brZ", anchor_location[_BR][Coord_Z]);
         handler.item("beltEndExtension", _beltEndExtension);
         handler.item("armLength", _armLength);
+        handler.item("beltToothSpacing", _beltToothSpacing);
+        handler.item("encoderTeeth", _encoderTeeth);
         handler.item("maxSegmentLength", _maxSegmentLength);
         handler.item("fixedZ", _fixedZ);
     }
@@ -425,6 +420,7 @@ namespace Kinematics {
         // Recalculate center coordinates after configuration has been loaded
         // This is important when calibration results are saved and reloaded
         calculateCenter();
+        Maslow.setEncoderGeometry(_beltToothSpacing, _encoderTeeth);
         log_debug("Center coordinates recalculated after configuration load: X=" << _centerX << " Y=" << _centerY);
     }
 

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include <cstdio>
 #include <vector>
 
 namespace {
@@ -45,7 +46,6 @@ namespace {
         double rms;             // sqrt(SSR / 4N) — overall fitness analog, units: mm
         double maxResidual;     // max|r_i| — single worst belt-length error, mm
         double rmsPerAnchor[4]; // {tl, tr, bl, br} per-anchor RMS, mm
-        int    iterations;      // LM iterations actually run
         bool   converged;       // true if step-norm < threshold within iteration cap
     };
 
@@ -784,41 +784,73 @@ bool Calibration::recomputeAnchorsWithLevenbergMarquardt(int measurementCount) {
             measurements.push_back({ calibration_data[i][0], calibration_data[i][1], calibration_data[i][2], calibration_data[i][3] });
         }
 
-        std::vector<double> params;
-        params.reserve(5 + 2 * measurementCount);
-        params.push_back(kinematics->getTlX());
-        params.push_back(kinematics->getTlY());
-        params.push_back(kinematics->getTrX());
-        params.push_back(kinematics->getTrY());
-        params.push_back(kinematics->getBrX());
+        // Capture initial anchor estimates for retry perturbations
+        const double tlX0 = kinematics->getTlX();
+        const double tlY0 = kinematics->getTlY();
+        const double trX0 = kinematics->getTrX();
+        const double trY0 = kinematics->getTrY();
+        const double brX0 = kinematics->getBrX();
 
-        // Capture pre-solve anchor params for cross-recompute jump detection
-        const double tlX0 = params[0];
-        const double tlY0 = params[1];
-        const double trX0 = params[2];
-        const double trY0 = params[3];
-        const double brX0 = params[4];
+        // Perturbation offsets applied to anchor starting positions on each retry.
+        // tl and tr are perturbed symmetrically (opposite X) to preserve rough frame symmetry.
+        // There are LM_MAX_RETRIES entries — one per retry after the initial attempt (attempt 0).
+        // Each retry is cheap (LM converges in tens of iterations) and the watchdog is serviced
+        // inside the loop, so a larger retry count does not cause problems on the ESP32.
+        constexpr int    LM_MAX_RETRIES     = 10;
+        constexpr double LM_PERTURB_SMALL   = 25.0;  // mm — first pass of perturbations
+        constexpr double LM_PERTURB_LARGE   = 50.0;  // mm — second pass with larger offsets
+        constexpr double LM_LAMBDA_OVERFLOW = 1e12;  // lambda threshold above which LM is considered stalled
+        // clang-format off
+        const double perturbX[LM_MAX_RETRIES] = {
+             LM_PERTURB_SMALL, -LM_PERTURB_SMALL,  0.0,               0.0,
+             LM_PERTURB_SMALL, -LM_PERTURB_SMALL,
+             LM_PERTURB_LARGE, -LM_PERTURB_LARGE,  0.0,               0.0 };
+        const double perturbY[LM_MAX_RETRIES] = {
+             0.0,               0.0,               LM_PERTURB_SMALL, -LM_PERTURB_SMALL,
+             LM_PERTURB_SMALL, -LM_PERTURB_SMALL,
+             0.0,               0.0,               LM_PERTURB_LARGE, -LM_PERTURB_LARGE };
+        // clang-format on
 
-        for (const auto& measurement : measurements) {
-            serviceCalibrationWatchdogs(true);
-            double sx = 0.0;
-            double sy = 0.0;
-            estimateSledPosition(measurement, params[0], params[1], params[2], params[3], params[4], sx, sy);
-            params.push_back(sx);
-            params.push_back(sy);
-        }
+        std::vector<double> globalBestParams;
+        double              globalBestSSR = std::numeric_limits<double>::infinity();
+        bool                anyConverged  = false;
 
-        std::vector<double> residuals;
-        bundleResiduals(measurements, params, residuals);
-        double currentSSR = sumSquaredResiduals(residuals);
+        for (int attempt = 0; attempt <= LM_MAX_RETRIES; attempt++) {
+            if (attempt > 0) {
+                log_info("Find Anchors LM retry " << attempt << "/" << LM_MAX_RETRIES << " with perturbed anchors");
+            }
 
-        std::vector<double> bestParams = params;
-        double              bestSSR    = currentSSR;
-        double              lambda     = LM_INITIAL_LAMBDA;
-        int                 rejections = 0;
-        std::vector<double> nextParams;
-        std::vector<double> nextResiduals;
-        int                 iterationCount = 0;
+            const double px = (attempt > 0) ? perturbX[attempt - 1] : 0.0;
+            const double py = (attempt > 0) ? perturbY[attempt - 1] : 0.0;
+
+            std::vector<double> params;
+            params.reserve(5 + 2 * measurementCount);
+            params.push_back(tlX0 + px);
+            params.push_back(tlY0 + py);
+            params.push_back(trX0 - px);  // symmetric: tr perturbed opposite to tl in X
+            params.push_back(trY0 + py);
+            params.push_back(brX0);
+
+            for (const auto& measurement : measurements) {
+                serviceCalibrationWatchdogs(true);
+                double sx = 0.0;
+                double sy = 0.0;
+                estimateSledPosition(measurement, params[0], params[1], params[2], params[3], params[4], sx, sy);
+                params.push_back(sx);
+                params.push_back(sy);
+            }
+
+            std::vector<double> residuals;
+            bundleResiduals(measurements, params, residuals);
+            double currentSSR = sumSquaredResiduals(residuals);
+
+            std::vector<double> bestParams = params;
+            double              bestSSR    = currentSSR;
+            double              lambda     = LM_INITIAL_LAMBDA;
+            int                 rejections = 0;
+            std::vector<double> nextParams;
+            std::vector<double> nextResiduals;
+            int                 iterationCount = 0;
 
         for (int iteration = 0; iteration < LM_MAX_ITERATIONS; iteration++) {
             iterationCount = iteration + 1;
@@ -959,23 +991,36 @@ bool Calibration::recomputeAnchorsWithLevenbergMarquardt(int measurementCount) {
             } else {
                 lambda *= LM_LAMBDA_INCREASE;
                 rejections++;
-                if (rejections > LM_MAX_REJECTIONS || lambda > 1e12) {
+                if (rejections > LM_MAX_REJECTIONS || lambda > LM_LAMBDA_OVERFLOW) {
                     break;
                 }
             }
-        }
-        log_debug("Find Anchors LM iterations=" << iterationCount << " bestSSR=" << bestSSR);
+            // end of LM loop
+            }
+            const bool thisConverged = (rejections <= LM_MAX_REJECTIONS) && (lambda < LM_LAMBDA_OVERFLOW);
+            log_debug("Find Anchors LM attempt=" << attempt << " iterations=" << iterationCount
+                                                 << " bestSSR=" << bestSSR << " converged=" << thisConverged);
+
+            if (bestSSR < globalBestSSR) {
+                globalBestSSR    = bestSSR;
+                globalBestParams = bestParams;
+            }
+
+            if (thisConverged) {
+                anyConverged = true;
+                break;
+            }
+        }  // end retry loop
 
         serviceCalibrationWatchdogs(true);
 
         // ── Fitness computation ────────────────────────────────────────────────
         std::vector<double> finalRes;
-        bundleResiduals(measurements, bestParams, finalRes);
+        bundleResiduals(measurements, globalBestParams, finalRes);
 
         CalibrationFitness fit;
-        fit.rms        = std::sqrt(bestSSR / (4.0 * measurementCount));
-        fit.iterations = iterationCount;
-        fit.converged  = (rejections <= LM_MAX_REJECTIONS) && (lambda < 1e12);
+        fit.rms       = std::sqrt(globalBestSSR / (4.0 * measurementCount));
+        fit.converged = anyConverged;
 
         fit.maxResidual = 0.0;
         for (const double r : finalRes) {
@@ -998,8 +1043,7 @@ bool Calibration::recomputeAnchorsWithLevenbergMarquardt(int measurementCount) {
 
         // Gate 1: convergence
         if (!fit.converged) {
-            log_error("Find Anchors fit failed: LM did not converge (rejections=" << rejections << " lambda=" << lambda
-                                                                                   << ") - the math solver stalled; this is often transient, try calibrating again");
+            log_error("Find Anchors fit failed: LM did not converge after retries - the math solver stalled; try calibrating again");
             return false;
         }
 
@@ -1032,15 +1076,15 @@ bool Calibration::recomputeAnchorsWithLevenbergMarquardt(int measurementCount) {
         log_info("Find Anchors fit: rms=" << fit.rms << "mm max=" << fit.maxResidual << "mm"
                                           << " perAnchor=[" << fit.rmsPerAnchor[0] << "," << fit.rmsPerAnchor[1] << ","
                                           << fit.rmsPerAnchor[2] << "," << fit.rmsPerAnchor[3] << "]mm"
-                                          << " iters=" << fit.iterations << " converged=" << fit.converged);
+                                          << " converged=" << fit.converged);
 
         previousFitnessRms  = fit.rms;
         lastRecomputePassed = true;
 
-        kinematics->setCalibrationAnchors(bestParams[0], bestParams[1], bestParams[2], bestParams[3], bestParams[4]);
-        log_info("Find Anchors recompute complete: tl=(" << bestParams[0] << "," << bestParams[1] << ") tr=(" << bestParams[2] << ","
-                                                        << bestParams[3] << ") brX=" << bestParams[4]
-                                                        << " SSR=" << bestSSR << " points=" << measurementCount);
+        kinematics->setCalibrationAnchors(globalBestParams[0], globalBestParams[1], globalBestParams[2], globalBestParams[3], globalBestParams[4]);
+        log_info("Find Anchors recompute complete: tl=(" << globalBestParams[0] << "," << globalBestParams[1] << ") tr=(" << globalBestParams[2] << ","
+                                                        << globalBestParams[3] << ") brX=" << globalBestParams[4]
+                                                        << " SSR=" << globalBestSSR << " points=" << measurementCount);
         return true;
     } catch (const std::bad_alloc&) {
         log_error("Find Anchors recompute failed: out of memory at points=" << measurementCount);
@@ -1049,6 +1093,81 @@ bool Calibration::recomputeAnchorsWithLevenbergMarquardt(int measurementCount) {
         log_error("Find Anchors recompute failed: unexpected exception at points=" << measurementCount);
         return false;
     }
+}
+
+void Calibration::logClbmMeasurements(int measurementCount) const {
+    if (measurementCount <= 0 || calibration_data == nullptr) {
+        return;
+    }
+
+    std::string clbm = "CLBM:[";
+    clbm.reserve(16 + static_cast<size_t>(measurementCount) * 48);
+
+    char item[64];
+    for (int i = 0; i < measurementCount; i++) {
+        snprintf(item,
+                 sizeof(item),
+                 "{bl:%g, br:%g, tr:%g, tl:%g}",
+                 calibration_data[i][_BL],
+                 calibration_data[i][_BR],
+                 calibration_data[i][_TR],
+                 calibration_data[i][_TL]);
+        clbm += item;
+        if (i + 1 < measurementCount) {
+            clbm += ",";
+        }
+    }
+    clbm += "]";
+
+    log_info(clbm.c_str());
+}
+
+bool Calibration::updateExtendDistanceFromAnchors() {
+    auto kinematics = getKinematics();
+    if (!kinematics) {
+        log_error("Find Anchors completed, but MaslowKinematics is unavailable for updating " << M << "_Extend_Dist");
+        return false;
+    }
+
+    constexpr float safetyMargin = 100.0f;
+    const float     extension    = kinematics->getBeltEndExtension() + kinematics->getArmLength();
+    const float     xPos         = Maslow.x;
+    const float     yPos         = Maslow.y;
+    const float     zPos         = get_mpos()[2];
+
+    const float zTotal[ARM_COUNT] = { zPos + kinematics->getTlZ() + kinematics->getSpoilboardThickness() + kinematics->getWorkThickness(),
+                                      zPos + kinematics->getTrZ() + kinematics->getSpoilboardThickness() + kinematics->getWorkThickness(),
+                                      zPos + kinematics->getBlZ() + kinematics->getSpoilboardThickness() + kinematics->getWorkThickness(),
+                                      zPos + kinematics->getBrZ() + kinematics->getSpoilboardThickness() + kinematics->getWorkThickness() };
+
+    const float beltLength[ARM_COUNT] = { kinematics->computeTL(xPos, yPos, zPos),
+                                          kinematics->computeTR(xPos, yPos, zPos),
+                                          kinematics->computeBL(xPos, yPos, zPos),
+                                          kinematics->computeBR(xPos, yPos, zPos) };
+
+    float distanceToAnchor[ARM_COUNT] = {};
+    for (int arm = 0; arm < ARM_COUNT; arm++) {
+        distanceToAnchor[arm] = measurementToXYPlane(beltLength[arm], fabsf(zTotal[arm]));
+        if (!std::isfinite(distanceToAnchor[arm])) {
+            log_error("Find Anchors completed, but invalid anchor distance prevented updating " << M << "_Extend_Dist");
+            return false;
+        }
+    }
+
+    const float trBlDiagonalAverage   = 0.5f * (distanceToAnchor[_TR] + distanceToAnchor[_BL]);
+    const float tlBrDiagonalAverage   = 0.5f * (distanceToAnchor[_TL] + distanceToAnchor[_BR]);
+    const float longestDiagonalAverage = std::max(trBlDiagonalAverage, tlBrDiagonalAverage);
+
+    const float computedExtendDistance = longestDiagonalAverage + safetyMargin - extension;
+    if (!std::isfinite(computedExtendDistance)) {
+        log_error("Find Anchors completed, but computed " << M << "_Extend_Dist is invalid");
+        return false;
+    }
+
+    extendDist = std::max(0.0f, computedExtendDistance);
+    log_info("Find Anchors set " << M << "_Extend_Dist=" << extendDist << " (TR-BL avg=" << trBlDiagonalAverage
+                                 << ", TL-BR avg=" << tlBrDiagonalAverage << ", extension=" << extension << ")");
+    return true;
 }
 
 // --Maslow calibration loop
@@ -1061,6 +1180,10 @@ void Calibration::calibration_loop() {
         // after all fitness gates pass; it is reset to false by resetCalibrationState().
         // Calibration always performs at least one recompute before reaching waypoint > pointCount.
         if (lastRecomputePassed) {
+            if (!updateExtendDistanceFromAnchors()) {
+                log_error("Find Anchors completed, but failed to update " << M << "_Extend_Dist");
+            }
+
             char saveCommand[] = "$CO";
             Error saveResult   = execute_line(saveCommand, allChannels, WebUI::AuthenticationLevel::LEVEL_ADMIN);
             if (saveResult != Error::Ok) {
@@ -1093,6 +1216,7 @@ void Calibration::calibration_loop() {
             waypoint++;  //Increment the waypoint counter
 
             if (waypoint > recomputePoints[recomputeCountIndex]) {  //If we have reached the end of this stage of the calibration process
+                logClbmMeasurements(waypoint);
                 if (!recomputeAnchorsWithLevenbergMarquardt(waypoint)) {
                     log_error("Find Anchors recompute failed");
                     resetCalibrationState();
@@ -1136,8 +1260,35 @@ void Calibration::calibration_loop() {
 bool Calibration::takeSlackFunc() {
     static int takeSlackState = 0;  //0 -> Starting, 1-> Moving to (0,0), 2-> Taking a measurement. Where should this be defined correctly?
     static unsigned long holdTimer = millis();
-    static float         startingX = 0;
-    static float         startingY = 0;
+    static bool          retractionMonitorInitialized = false;
+    static float         startBeltPosition[ARM_COUNT] = { 0 };
+
+    if (!retractionMonitorInitialized) {
+        for (int arm = _TL; arm < ARM_COUNT; arm++) {
+            startBeltPosition[arm] = Maslow.axis[arm].getPosition();
+        }
+        retractionMonitorInitialized = true;
+    }
+
+    for (int arm = _TL; arm < ARM_COUNT; arm++) {
+        const float retractedAmount = startBeltPosition[arm] - Maslow.axis[arm].getPosition();
+        if (applyTensionAllowLimiting && retractedAmount > applyTensionBeltRetractionLimitMm) {
+            for (int stopArm = _TL; stopArm < ARM_COUNT; stopArm++) {
+                Maslow.axis[stopArm].setTarget(Maslow.axis[stopArm].getPosition());
+                Maslow.axis[stopArm].stop();
+            }
+
+            log_warn("Maslow Apply Tension retraction warning: Belt "
+                     << Maslow.axis_id_to_label(arm).c_str() << " retracted " << retractedAmount
+                     << "mm while applying tension (limit " << applyTensionBeltRetractionLimitMm
+                     << "mm). A belt may not be anchored. Continue to keep retracting or Cancel to stop. Reduce Extend Dist or extend Belt Retraction Limit (Options) if Belts Attached to Anchors. Release Tension will allow Approx. 10mm of belt to be released.");
+
+            takeSlackState                = 0;
+            retractionMonitorInitialized  = false;
+            requestStateChange(EXTENDEDOUT);
+            return true;
+        }
+    }
 
     //Take a measurement
     if (takeSlackState == 0) {
@@ -1148,12 +1299,16 @@ bool Calibration::takeSlackFunc() {
             float y = 0;
             if (!computeXYfromLengths(calibration_data[0][0], calibration_data[0][1], x, y)) {
                 log_error("Failed to compute XY from lengths");
+                retractionMonitorInitialized = false;
                 return true;
             }
 
             auto kinematics = getKinematics();
             if (!kinematics)
+            {
+                retractionMonitorInitialized = false;
                 return true;
+            }
 
             // Get current Z position to accurately compute expected belt lengths
             float* mpos     = get_mpos();
@@ -1185,6 +1340,7 @@ bool Calibration::takeSlackFunc() {
 
                 //Reset
                 takeSlackState = 0;
+                retractionMonitorInitialized = false;
                 requestStateChange(EXTENDEDOUT);
                 return true;
             } else {
@@ -1197,6 +1353,7 @@ bool Calibration::takeSlackFunc() {
                 }
                 takeSlackState = 0;
                 holdTimer      = millis();
+                retractionMonitorInitialized = false;
 
                 // Instead of setting cartesian position and letting kinematics recalculate motor positions,
                 // we need to set the motor positions directly from the measured belt lengths to avoid
@@ -1244,6 +1401,7 @@ bool Calibration::takeSlackFunc() {
     if (takeSlackState == 1) {
         if (millis() - holdTimer > 2000) {
             takeSlackState = 0;
+            retractionMonitorInitialized = false;
             return true;
         }
     }
@@ -1708,7 +1866,7 @@ bool Calibration::take_measurement_avg_with_check(int waypoint, int dir) {
                 criticalCounter               = 0;
             }
             log_info("Measured waypoint " << waypoint);
-            log_debug("Waypoint " << waypoint << " coordinates: X=" << calibrationGrid[waypoint][0] << " Y=" << calibrationGrid[waypoint][1]);
+            log_info("Waypoint " << waypoint << " coordinates: X=" << calibrationGrid[waypoint][0] << " Y=" << calibrationGrid[waypoint][1]);
 
             //A check to see if the results on the first point are within the expected range
             //This logic should only run during calibration, not during Apply Tension

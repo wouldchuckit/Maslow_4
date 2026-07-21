@@ -4,11 +4,16 @@
 /** Maslow Status */
 let maslowStatus = { homed: false, extended: false, state: 0 };
 const APPLY_TENSION_WARNING_PREFIX = "Maslow Apply Tension deviation warning:";
+const APPLY_TENSION_RETRACTION_WARNING_PREFIX = "Maslow Apply Tension retraction warning:";
+const Z_HOME_RESET_WARNING_PREFIX = "Maslow Z home reset warning:";
+const ZM_INVALID_WARNING_PREFIX = "Maslow Zm invalid warning:";
 
 /** Maslow state constants (mirror firmware Maslow.h defines) */
 const MASLOW_STATE_FINDING_ANCHORS = 6;
 const MASLOW_STATE_READY_TO_CUT = 7;
 const MASLOW_STATE_FIND_ANCHORS_COMPUTING = 9;
+const FIND_ANCHORS_WAYPOINT_COORDINATE_REGEX = /^\[MSG:INFO:\s*Waypoint\s+\d+\s+coordinates:\s*X=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+Y=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\]$/;
+let wasFindingAnchors = false;
 
 /** This keeps track of when we saw the last heartbeat from the machine */
 //I think this is not used anymore and can be removed now
@@ -276,6 +281,24 @@ const updateDynamicButtons = () => {
 const updateFindAnchorsView = () => {
 	const isFindingAnchors = (maslowStatus.state === MASLOW_STATE_FINDING_ANCHORS || maslowStatus.state === MASLOW_STATE_FIND_ANCHORS_COMPUTING);
 
+	if (isFindingAnchors !== wasFindingAnchors) {
+		if (isFindingAnchors) {
+			if (typeof clearFindAnchorsTrace === 'function') {
+				clearFindAnchorsTrace();
+			}
+			if (typeof setGcodeViewerPage === 'function') {
+				setGcodeViewerPage(4);
+			}
+			if (typeof showGCode === 'function') {
+				showGCode("");
+			}
+			if (typeof refreshGcode === 'function') {
+				refreshGcode();
+			}
+		}
+		wasFindingAnchors = isFindingAnchors;
+	}
+
 	const elementsToHide = [
 		document.getElementById('tablettab-jog-controls'),
 		document.getElementById('tablettab-file-controls'),
@@ -344,6 +367,20 @@ const maslowInfoMsgHandling = (msg) => {
 		return true;
 	}
 
+	if (msg.startsWith("[MSG:INFO: Waypoint ")) {
+		const waypointMatch = msg.match(FIND_ANCHORS_WAYPOINT_COORDINATE_REGEX);
+		if (waypointMatch) {
+			const x = Number(waypointMatch[1]);
+			const y = Number(waypointMatch[2]);
+			if (Number.isFinite(x) && Number.isFinite(y) && typeof addFindAnchorsTracePoint === 'function') {
+				addFindAnchorsTracePoint(x, y);
+				if (typeof refreshGcode === 'function') {
+					refreshGcode();
+				}
+			}
+		}
+	}
+
 	//Catch the calibration complete message and alert the user...this locks up the UI which is bad...should be handled better
 	if (msg.startsWith("[MSG:INFO: Calibration complete")) {
 		showCalibrationCompleteMessage();
@@ -352,6 +389,16 @@ const maslowInfoMsgHandling = (msg) => {
 
 	if (msg.startsWith(`[MSG:WARN: ${APPLY_TENSION_WARNING_PREFIX}`)) {
 		showApplyTensionWarningMessage(msg);
+	}
+
+	if (msg.startsWith(`[MSG:WARN: ${APPLY_TENSION_RETRACTION_WARNING_PREFIX}`)) {
+		showApplyTensionRetractionWarningMessage(msg);
+	}
+
+	if (msg.startsWith(`[MSG:WARN: ${Z_HOME_RESET_WARNING_PREFIX}`)) {
+		showZHomeResetWarningMessage(msg);
+	} else if (msg.startsWith(`[MSG:WARN: ${ZM_INVALID_WARNING_PREFIX}`)) {
+		showZmInvalidWarningMessage(msg);
 	}
 
 	return false;
@@ -444,6 +491,114 @@ function showApplyTensionWarningMessage(msg) {
 	);
 }
 
+function showApplyTensionRetractionWarningMessage(msg) {
+	const warningMatch = msg.match(/^\[MSG:WARN:\s*(.*)\]$/);
+	if (!warningMatch) {
+		return;
+	}
+
+	const warningText = warningMatch[1].trim();
+	if (!warningText.startsWith(APPLY_TENSION_RETRACTION_WARNING_PREFIX)) {
+		return;
+	}
+
+	const modalId = "apply-tension-retraction-warning-modal";
+	const existingModal = document.getElementById(modalId);
+	if (existingModal) {
+		existingModal.remove();
+	}
+
+	const modal = document.createElement("div");
+	modal.id = modalId;
+	modal.style.cssText = `
+		position: fixed;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background-color: rgba(0, 0, 0, 0.45);
+		z-index: 2000;
+		padding: 20px;
+	`;
+
+	const dialog = document.createElement("div");
+	dialog.style.cssText = `
+		background-color: white;
+		padding: 20px;
+		border: 1px solid black;
+		box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+		max-width: 520px;
+		width: 100%;
+	`;
+
+	const heading = document.createElement("h3");
+	heading.textContent = "Apply Tension Warning";
+	heading.style.marginTop = "0";
+
+	const messageElement = document.createElement("p");
+	messageElement.textContent = warningText.substring(APPLY_TENSION_RETRACTION_WARNING_PREFIX.length).trim();
+
+	const actions = document.createElement("div");
+	actions.style.cssText = "display: flex; gap: 10px; justify-content: flex-end;";
+
+	const cancelButton = document.createElement("button");
+	cancelButton.textContent = "Cancel";
+	cancelButton.style.cssText = "padding: 5px 10px; cursor: pointer;";
+	cancelButton.onclick = () => modal.remove();
+
+	const continueButton = document.createElement("button");
+	continueButton.textContent = "Continue";
+	continueButton.style.cssText = "padding: 5px 10px; cursor: pointer;";
+	continueButton.onclick = () => {
+		sendCommand("$TKSLK");
+		modal.remove();
+	};
+
+	actions.appendChild(cancelButton);
+	actions.appendChild(continueButton);
+	dialog.appendChild(heading);
+	dialog.appendChild(messageElement);
+	dialog.appendChild(actions);
+	modal.appendChild(dialog);
+	document.body.appendChild(modal);
+}
+
+function showZHomeResetWarningMessage(msg) {
+	const warningMatch = msg.match(/^\[MSG:WARN:\s*(.*)\]$/);
+	if (!warningMatch) {
+		return;
+	}
+
+	const warningText = warningMatch[1].trim();
+	if (!warningText.startsWith(Z_HOME_RESET_WARNING_PREFIX)) {
+		return;
+	}
+
+	showMaslowNoticeModal(
+		"z-home-reset-warning-modal",
+		"Z Home Reset",
+		warningText.substring(Z_HOME_RESET_WARNING_PREFIX.length).trim()
+	);
+}
+
+function showZmInvalidWarningMessage(msg) {
+	const warningMatch = msg.match(/^\[MSG:WARN:\s*(.*)\]$/);
+	if (!warningMatch) {
+		return;
+	}
+
+	const warningText = warningMatch[1].trim();
+	if (!warningText.startsWith(ZM_INVALID_WARNING_PREFIX)) {
+		return;
+	}
+
+	showMaslowNoticeModal(
+		"zm-invalid-warning-modal",
+		"Z Position Invalid",
+		warningText.substring(ZM_INVALID_WARNING_PREFIX.length).trim()
+	);
+}
+
 /** Perform maslow specific-ish error message handling */
 const maslowErrorMsgHandling = (msg) => {
 	if (!msg.startsWith("error:")) {
@@ -466,6 +621,8 @@ const cfgDef = {
 	spoilboardThickness: { name: "spoilboardThickness", type: "A", cmd: "Maslow_spoilboardThickness" },
 	workThickness: { name: "workThickness", type: "A", cmd: "Maslow_workThickness" },
 	Acceptable_Calibration_Threshold: { name: "acceptableCalibrationThreshold", type: "A", cmd: "Maslow_Acceptable_Calibration_Threshold" },
+	Apply_Tension_Belt_Retraction_Limit: { name: "applyTensionBeltRetractionLimit", type: "A", cmd: "Maslow_Apply_Tension_Belt_Retraction_Limit" },
+	Apply_Tension_Allow_Limiting: { name: "applyTensionAllowLimiting", type: "A", cmd: "Maslow_Apply_Tension_Allow_Limiting" },
 	Extend_Dist: { name: "extendDist", type: "A", cmd: "Maslow_Extend_Dist" },
 	Scale_X: { name: "scaleX", type: "A", cmd: "Maslow_Scale_X" },
 	Scale_Y: { name: "scaleY", type: "A", cmd: "Maslow_Scale_Y" },

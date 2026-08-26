@@ -13,7 +13,13 @@ This guide is intended to get your Maslow up and running in as few words as poss
 - Have a **FIRE** suppression plan and equipment. This may be the biggest risk. Hot blades ignite dust.
 - Consider how you will cut power to the machine in an emergency.
 - Check for loose parts, tools, keys, and if the blades are in an appropriate place before providing power to the machine.
-- Train yourself and anyone who will come in contact with the machine on your saftely plan.
+- Train yourself and anyone who will come in contact with the machine on your saftey plan.
+
+  
+## What's not in the box
+
+- Dewalt DW611 Router 120 volt countries or Dewalt D26200 in 240 volt countries
+- Cutting bit, 1/4 Inch Two Flute Up Spiral Router Bit is good to start with
 
 ## Choosing your Anchors
 
